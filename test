@@ -1,0 +1,77 @@
+import openai
+import os
+from langchain_community.llms import Ollama
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_community.document_loaders import WebBaseLoader
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain
+from langchain.chains import create_history_aware_retriever
+from langchain_core.prompts import MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain.tools.retriever import create_retriever_tool
+from langchain_community.tools.tavily_search import TavilySearchResults
+
+
+#Loading Sources
+OPENAI_API_KEY="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"
+llm = Ollama(model="llama2")
+loader = WebBaseLoader("https://books.google.com.sg/books?hl=en&lr=&id=eEYrDwAAQBAJ&oi=fnd&pg=PP1&dq=urban+density+and+sustainability&ots=Vebg2OIzPf&sig=e9h3t9qTqyGhSUvoR9uq9zcYJ_E&redir_esc=y#v=onepage&q=urban%20density%20and%20sustainability&f=false")
+embeddings = OllamaEmbeddings()
+docs = loader.load()
+text_splitter = RecursiveCharacterTextSplitter()
+documents = text_splitter.split_documents(docs)
+vector = FAISS.from_documents(documents, embeddings)
+retriever = vector.as_retriever()
+
+#Agent
+retriever_tool = create_retriever_tool(
+    retriever,
+    "climatechange_search",
+    "Search for information about urban infrastructure and climate condition and change. For any questions about climate or urban structuring plans, you must use this tool!",)
+tools = [retriever_tool]
+
+from langchain_openai import ChatOpenAI
+from langchain import hub
+from langchain.agents import create_openai_functions_agent
+from langchain.agents import AgentExecutor
+
+# Get the prompt to use - you can modify this!
+prompt = hub.pull("hwchase17/openai-functions-agent")
+llm2 = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+agent = create_openai_functions_agent(llm2, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+#Chat history Chain
+prompt = ChatPromptTemplate.from_messages([
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("user", "{input}"),
+    ("user", "Given the above conversation, generate a search query to look up in order to get information relevant to the conversation")
+])
+retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
+
+chat_history = [HumanMessage(content="Is there a relationship between climate conditions and urban infrastructure density?"), AIMessage(content="Yes!")]
+retriever_chain.invoke({
+    "chat_history": chat_history,
+    "input": "Tell me how"
+})
+
+#Prompt Chain
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "Answer the user's questions based on the below context:\n\n{context}"),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("user", "{input}"),
+])
+
+document_chain = create_stuff_documents_chain(llm, prompt)
+retrieval_chain = create_retrieval_chain(retriever, document_chain)
+
+chain = retrieval_chain | agent_executor
+
+#Chat
+chat_history = [HumanMessage(content="Is there a relationship between the infrastructure density and climate condition?"), AIMessage(content="Yes!")]
+response = chain.invoke({"chat_history": chat_history, "input": "Can you describe this relationship and provide a real life example?"})
+print(response["answer"])
