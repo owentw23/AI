@@ -1,6 +1,0 @@
-import openai
-import os
-
-OPENAI_API_KEY="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"
-openai.api_key=OPENAI_API_KEY
-print(openai.api_key)
